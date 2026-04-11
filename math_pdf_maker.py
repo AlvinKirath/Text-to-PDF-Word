@@ -657,6 +657,24 @@ class MathPdfMaker(QMainWindow):
                         # Restore pristine math blocks and normalize delimiters for MS Word COM
                         def restore_math(m): 
                             mtxt = math_blocks[int(m.group(1))]
+                            
+                            # 1. Flatten multiline math. Word's COM 'Find' fails if there are newlines.
+                            mtxt = mtxt.replace('\n', ' ').replace('\r', '')
+                            
+                            # 2. Fix unsupported LaTeX commands for Word's native equation builder
+                            mtxt = mtxt.replace(r'\,', ' ') # Word hates LaTeX thin spaces
+                            
+                            # 3. Convert LaTeX matrices into Word's native UnicodeMath format
+                            def matrix_repl(mat_m):
+                                m_type, m_content = mat_m.group(1), mat_m.group(2)
+                                m_content = re.sub(r'\\\\', '@', m_content) # Replace LaTeX row breaks with Word row breaks
+                                if m_type == 'bmatrix': return f"[ \\matrix({m_content}) ]"
+                                if m_type == 'pmatrix': return f"( \\matrix({m_content}) )"
+                                if m_type == 'vmatrix': return f"| \\matrix({m_content}) |"
+                                return f"\\matrix({m_content})"
+                                
+                            mtxt = re.sub(r'\\begin\{(bmatrix|pmatrix|vmatrix|matrix)\}(.*?)\\end\{\1\}', matrix_repl, mtxt)
+
                             if mtxt.startswith('\\[') and mtxt.endswith('\\]'):
                                 return '$$' + mtxt[2:-2] + '$$'
                             if mtxt.startswith('\\(') and mtxt.endswith('\\)'):
