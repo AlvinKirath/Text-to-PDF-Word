@@ -358,13 +358,21 @@ class MathPdfMaker(QMainWindow):
 
     def generate_html(self):
         raw_text = self.editor.toPlainText()
+        
+        # --- FIX: Auto-correct AI copy-paste errors ---
+        # When copying from AI chats, \[ and \] often get stripped to [ and ]
+        raw_text = re.sub(r'^[ \t]*\[[ \t]*$', r'\\[', raw_text, flags=re.MULTILINE)
+        raw_text = re.sub(r'^[ \t]*\][ \t]*$', r'\\]', raw_text, flags=re.MULTILINE)
+        
         safe_text = html.escape(raw_text)
         
         # --- FIX: Protect Math blocks from HTML <br> injection ---
         # The previous naive replace('\n', '<br>') destroyed multiline LaTeX matrices!
         math_blocks = []
         def math_repl(match):
-            math_blocks.append(match.group(0))
+            # Auto-fix single backslashes at the end of matrix lines
+            fixed_math = re.sub(r'(?<!\\)\\\s*\n', r'\\\\\n', match.group(0))
+            math_blocks.append(fixed_math)
             return f"__MATH_BLOCK_{len(math_blocks)-1}__"
 
         # Extract properly formatted display and inline math safely into placeholders FIRST
@@ -598,10 +606,15 @@ class MathPdfMaker(QMainWindow):
             
             raw_text = self.editor.toPlainText()
             
+            # --- FIX: Auto-correct AI copy-paste errors ---
+            raw_text = re.sub(r'^[ \t]*\[[ \t]*$', r'\\[', raw_text, flags=re.MULTILINE)
+            raw_text = re.sub(r'^[ \t]*\][ \t]*$', r'\\]', raw_text, flags=re.MULTILINE)
+            
             # --- FIX: Protect Math from Word Paragraph Splitting ---
             math_blocks = []
             def math_repl(match):
-                math_blocks.append(match.group(0))
+                fixed_math = re.sub(r'(?<!\\)\\\s*\n', r'\\\\\n', match.group(0))
+                math_blocks.append(fixed_math)
                 return f"__MATH_{len(math_blocks)-1}__"
 
             # Extract properly formatted math FIRST
@@ -769,7 +782,7 @@ class MathPdfMaker(QMainWindow):
                             word.Quit()
                     except: pass
             
-            QMessageBox.information(self, "Success", f"Word Document exported successfully to:\n{filepath}\n\nLibreOffice Tip: LibreOffice does not natively support raw LaTeX. You must install the 'TexMaths' extension or use the PDF export.")
+            QMessageBox.information(self, "Success", f"Word Document exported successfully to:\n{filepath}")
             
             try:
                 if os.name == 'nt': os.startfile(filepath)
@@ -812,9 +825,14 @@ class MathPdfMaker(QMainWindow):
             
             raw_text = self.editor.toPlainText()
             
+            # --- FIX: Auto-correct AI copy-paste errors ---
+            raw_text = re.sub(r'^[ \t]*\[[ \t]*$', r'\\[', raw_text, flags=re.MULTILINE)
+            raw_text = re.sub(r'^[ \t]*\][ \t]*$', r'\\]', raw_text, flags=re.MULTILINE)
+            
             math_blocks = []
             def math_repl(match):
-                math_blocks.append(match.group(0))
+                fixed_math = re.sub(r'(?<!\\)\\\s*\n', r'\\\\\n', match.group(0))
+                math_blocks.append(fixed_math)
                 return f"__MATH_{len(math_blocks)-1}__"
 
             safe_text = re.sub(r'\$\$.*?\$\$', math_repl, raw_text, flags=re.DOTALL)
