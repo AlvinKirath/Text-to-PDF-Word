@@ -39,6 +39,10 @@ def check_dependencies():
         import win32com.client
     except ImportError:
         missing.append("pywin32")
+    try:
+        import math2docx
+    except ImportError:
+        missing.append("math2docx")
     
     if missing:
         print(f"Installing missing dependencies: {', '.join(missing)}...")
@@ -654,44 +658,59 @@ class MathPdfMaker(QMainWindow):
                         
                         clean_text = part.strip('*')
                         
-                        # Restore pristine math blocks and normalize delimiters for MS Word COM
-                        def restore_math(m): 
-                            mtxt = math_blocks[int(m.group(1))]
-                            
-                            # 1. Flatten multiline math. Word's COM 'Find' fails if there are newlines.
-                            mtxt = mtxt.replace('\n', ' ').replace('\r', '')
-                            
-                            # 2. Fix unsupported LaTeX commands for Word's native equation builder
-                            mtxt = mtxt.replace(r'\,', ' ') # Word hates LaTeX thin spaces
-                            
-                            # 3. Convert LaTeX matrices into Word's native UnicodeMath format
-                            def matrix_repl(mat_m):
-                                m_type, m_content = mat_m.group(1), mat_m.group(2)
-                                m_content = re.sub(r'\\\\', '@', m_content) # Replace LaTeX row breaks with Word row breaks
-                                if m_type == 'bmatrix': return f"[ \\matrix({m_content}) ]"
-                                if m_type == 'pmatrix': return f"( \\matrix({m_content}) )"
-                                if m_type == 'vmatrix': return f"| \\matrix({m_content}) |"
-                                return f"\\matrix({m_content})"
-                                
-                            mtxt = re.sub(r'\\begin\{(bmatrix|pmatrix|vmatrix|matrix)\}(.*?)\\end\{\1\}', matrix_repl, mtxt)
-
-                            if mtxt.startswith('\\[') and mtxt.endswith('\\]'):
-                                return '$$' + mtxt[2:-2] + '$$'
-                            if mtxt.startswith('\\(') and mtxt.endswith('\\)'):
-                                return '$' + mtxt[2:-2] + '$'
-                            return mtxt
-                            
-                        final_text = re.sub(r'__MATH_(\d+)__', restore_math, clean_text)
+                        import math2docx
                         
-                        run = p.add_run(final_text)
-                        if is_bold: run.bold = True
-                        if is_italic: run.italic = True
+                        math_matches = list(re.finditer(r'__MATH_(\d+)__', clean_text))
+                        if not math_matches:
+                            run = p.add_run(clean_text)
+                            if is_bold: run.bold = True
+                            if is_italic: run.italic = True
+                        else:
+                            last_idx = 0
+                            for m in math_matches:
+                                pre_text = clean_text[last_idx:m.start()]
+                                if pre_text:
+                                    run = p.add_run(pre_text)
+                                    if is_bold: run.bold = True
+                                    if is_italic: run.italic = True
+                                
+                                math_idx = int(m.group(1))
+                                raw_math = math_blocks[math_idx]
+                                
+                                for delim in ['\\[', '\\]', '$$', '\\(', '\\)', '$']:
+                                    raw_math = raw_math.replace(delim, '')
+                                
+                                try:
+                                    # Directly inject the native Word OMML XML 
+                                    math2docx.add_math(p, raw_math.strip())
+                                except Exception as e:
+                                    p.add_run(f"[Math Render Error: {str(e)}]")
+                                    
+                                last_idx = m.end()
+                            
+                            post_text = clean_text[last_idx:]
+                            if post_text:
+                                run = p.add_run(post_text)
+                                if is_bold: run.bold = True
+                                if is_italic: run.italic = True
                         
                     # Add a soft carriage return if there are more lines in this structural paragraph
                     if line_idx < len(lines) - 1:
                         p.add_run().add_break()
                         
             doc.save(filepath)
+            
+            QMessageBox.information(self, "Success", f"Word Document exported natively to:\n{filepath}")
+            try:
+                if os.name == 'nt': os.startfile(filepath)
+                elif sys.platform == 'darwin': subprocess.run(['open', filepath])
+                else: subprocess.run(['xdg-open', filepath])
+            except: pass
+            
+            self.export_word_btn.setText("📝 Export Word (.docx)")
+            self.export_word_btn.setEnabled(True)
+            QTimer.singleShot(2000, self.progress_bar.hide)
+            return  # <-- THIS EXITS THE FUNCTION EARLY, BYPASSING ALL BUGGY COM CODE!
             
             # --- Auto-Convert Math using Windows COM or LibreOffice Headless ---
             if getattr(self, 'auto_math_cb', None) and self.auto_math_cb.isChecked():
