@@ -1,5 +1,6 @@
 import sys
 import os
+import shutil
 import re
 import json
 import urllib.request
@@ -19,26 +20,27 @@ def check_dependencies():
         import docx
     except ImportError:
         missing.append("python-docx")
-    try:
-        import rapidocr_onnxruntime
-    except ImportError:
+    import importlib.util
+    if importlib.util.find_spec("rapidocr_onnxruntime") is None:
         missing.append("rapidocr-onnxruntime")
     try:
         import fitz  # PyMuPDF
     except ImportError:
         missing.append("PyMuPDF")
     try:
-        from google import genai
-    except ImportError:
+        if importlib.util.find_spec("google.genai") is None:
+            missing.append("google-genai")
+    except (ImportError, ValueError):
         missing.append("google-genai")
     try:
         from PIL import Image
     except ImportError:
         missing.append("Pillow")
-    try:
-        import win32com.client
-    except ImportError:
-        missing.append("pywin32")
+    if os.name == 'nt':
+        try:
+            import win32com.client
+        except ImportError:
+            missing.append("pywin32")
     try:
         import math2docx
     except ImportError:
@@ -47,9 +49,10 @@ def check_dependencies():
     if missing:
         print(f"Installing missing dependencies: {', '.join(missing)}...")
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "-U"] + missing)
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "--break-system-packages", "-U"] + missing)
             print("Dependencies installed. Restarting...")
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            subprocess.Popen([sys.executable] + sys.argv)
+            sys.exit(0)
         except Exception as e:
             print(f"CRITICAL ERROR: Failed to install dependencies: {e}")
             sys.exit(1)
@@ -61,7 +64,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QLabel, QSpinBox, QDoubleSpinBox, QComboBox, 
                                QFileDialog, QMessageBox, QFrame, QLineEdit, QProgressBar)
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtGui import QPageLayout, QPageSize, QIcon, QFont
+from PySide6.QtGui import QPageLayout, QPageSize, QIcon, QFont, QSyntaxHighlighter, QTextCharFormat, QColor
 from PySide6.QtCore import Qt, QTimer, QUrl, QMargins, QMarginsF
 
 # --- OFFLINE MATHJAX SETUP ---
@@ -78,7 +81,7 @@ def ensure_offline_math_engine():
         url = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req) as response, open(MATHJAX_FILE, 'wb') as out_file:
+            with urllib.request.urlopen(req, timeout=5) as response, open(MATHJAX_FILE, 'wb') as out_file:
                 out_file.write(response.read())
             print("Offline engine ready!")
         except Exception as e:
@@ -86,6 +89,38 @@ def ensure_offline_math_engine():
             print("The app will attempt to use the live CDN fallback.")
 
 ensure_offline_math_engine()
+
+
+class MathSyntaxHighlighter(QSyntaxHighlighter):
+    """Automatically highlights LaTeX math blocks in the editor for easy visual debugging."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.inline_fmt = QTextCharFormat()
+        self.inline_fmt.setForeground(QColor("#E6DB74")) # Yellow for inline math
+        self.block_fmt = QTextCharFormat()
+        self.block_fmt.setForeground(QColor("#FD971F")) # Orange for block math
+        self.block_fmt.setFontWeight(QFont.Bold)
+
+    def highlightBlock(self, text):
+        # Highlight inline math: $ ... $
+        for match in re.finditer(r'(?<!\$)\$[^\$]+\$(?!\$)', text):
+            self.setFormat(match.start(), match.end() - match.start(), self.inline_fmt)
+            
+        # Highlight block math: $$ ... $$ (Handles multiline state)
+        self.setCurrentBlockState(0)
+        start_index = 0
+        if self.previousBlockState() != 1:
+            start_index = text.find("$$")
+            
+        while start_index >= 0:
+            end_index = text.find("$$", start_index + 2)
+            if end_index == -1:
+                self.setCurrentBlockState(1)
+                self.setFormat(start_index, len(text) - start_index, self.block_fmt)
+                break
+            else:
+                self.setFormat(start_index, end_index + 2 - start_index, self.block_fmt)
+                start_index = text.find("$$", end_index + 2)
 
 
 class MarkdownImageEditor(QPlainTextEdit):
@@ -173,7 +208,12 @@ class MathPdfMaker(QMainWindow):
         # --- TOOLBAR (Top) ---
         toolbar = QFrame()
         toolbar.setStyleSheet("QFrame { background-color: #2e2e2e; border-radius: 5px; padding: 5px; } QLabel { color: #fff; font-weight: bold; }")
-        tb_layout = QHBoxLayout(toolbar)
+        tb_main_layout = QVBoxLayout(toolbar)
+        tb_main_layout.setContentsMargins(0, 0, 0, 0)
+        tb_layout = QHBoxLayout()
+        tb_layout_row2 = QHBoxLayout()
+        tb_main_layout.addLayout(tb_layout)
+        tb_main_layout.addLayout(tb_layout_row2)
         
         # Header / Title
         tb_layout.addWidget(QLabel("Header:"))
@@ -222,8 +262,75 @@ class MathPdfMaker(QMainWindow):
         self.line_space_spin.setValue(1.5)
         self.line_space_spin.valueChanged.connect(self.update_preview)
         tb_layout.addWidget(self.line_space_spin)
+
+        tb_layout.addStretch() # Push the top row neatly to the left
+
+        # Page Border
+        tb_layout_row2.addWidget(QLabel("Page Border (px):"))
+        self.page_border_spin = QSpinBox()
+        self.page_border_spin.setRange(0, 10)
+        self.page_border_spin.setValue(0)
+        self.page_border_spin.valueChanged.connect(self.update_preview)
+        tb_layout_row2.addWidget(self.page_border_spin)
+
+        from PySide6.QtWidgets import QCheckBox
+        self.page_number_cb = QCheckBox("Page Numbers")
+        self.page_number_cb.setChecked(False) # Off by default
+        self.page_number_cb.setStyleSheet("color: #fff; margin-left: 10px;")
+        self.page_number_cb.stateChanged.connect(self.update_preview)
+        tb_layout_row2.addWidget(self.page_number_cb)
+
+        # Pagination Preview Controls
+        tb_layout_row2.addWidget(QLabel("  View:"))
+        self.preview_mode_cb = QComboBox()
+        self.preview_mode_cb.addItems(["Continuous", "Single Page"])
+        self.preview_mode_cb.currentTextChanged.connect(self.update_preview)
+        self.preview_mode_cb.setStyleSheet("background-color: #3e3e3e; color: #fff;")
+        tb_layout_row2.addWidget(self.preview_mode_cb)
         
-        tb_layout.addStretch()
+        from PySide6.QtWidgets import QCheckBox
+        self.paper_view_cb = QCheckBox("Paper View")
+        self.paper_view_cb.setChecked(False) # Off by default
+        self.paper_view_cb.setStyleSheet("color: #fff; font-weight: bold; margin-left: 10px;")
+        self.paper_view_cb.stateChanged.connect(self.update_preview)
+        tb_layout_row2.addWidget(self.paper_view_cb)
+        
+        self.page_limit_cb = QCheckBox("1-Page Limit")
+        self.page_limit_cb.setChecked(False)
+        self.page_limit_cb.setStyleSheet("color: #ff9999; font-weight: bold; margin-left: 10px;")
+        self.page_limit_cb.stateChanged.connect(self.update_preview)
+        tb_layout_row2.addWidget(self.page_limit_cb)
+        
+        self.limit_warning_lbl = QLabel("⚠️ LIMIT EXCEEDED")
+        self.limit_warning_lbl.setStyleSheet("color: #ff4444; font-weight: bold; background-color: #ffe6e6; padding: 2px 5px; border-radius: 3px;")
+        self.limit_warning_lbl.hide()
+        tb_layout_row2.addWidget(self.limit_warning_lbl)
+        
+        self.trim_btn = QPushButton("✂️ Auto-Trim to Fit")
+        self.trim_btn.setCursor(Qt.PointingHandCursor)
+        self.trim_btn.setStyleSheet("padding: 2px 8px; background-color: #e74c3c; color: white; border-radius: 3px; font-weight: bold;")
+        self.trim_btn.hide()
+        self.trim_btn.clicked.connect(self.trim_overflow)
+        tb_layout_row2.addWidget(self.trim_btn)
+        
+        self.undo_trim_btn = QPushButton("↩️ Undo Trim")
+        self.undo_trim_btn.setCursor(Qt.PointingHandCursor)
+        self.undo_trim_btn.setStyleSheet("padding: 2px 8px; background-color: #7f8c8d; color: white; border-radius: 3px; font-weight: bold;")
+        self.undo_trim_btn.hide()
+        self.undo_trim_btn.clicked.connect(self.undo_trim)
+        tb_layout_row2.addWidget(self.undo_trim_btn)
+        
+        self.page_spin = QSpinBox()
+        self.page_spin.setRange(1, 9999)
+        self.page_spin.setValue(1)
+        self.page_spin.valueChanged.connect(self.navigate_page)
+        self.page_spin.setToolTip("Go to Page")
+        tb_layout_row2.addWidget(self.page_spin)
+        
+        self.total_pages_lbl = QLabel(" / ?")
+        tb_layout_row2.addWidget(self.total_pages_lbl)
+        
+        tb_layout_row2.addStretch()
         main_layout.addWidget(toolbar)
 
         # --- SPLITTER (Editor / Preview) ---
@@ -243,28 +350,101 @@ class MathPdfMaker(QMainWindow):
         btn_matrix = QPushButton("[::] bmatrix")
         btn_matrix.setCursor(Qt.PointingHandCursor)
         btn_matrix.setStyleSheet("padding: 2px 8px; background-color: #3e3e3e; border-radius: 3px; font-weight: bold;")
-        btn_matrix.clicked.connect(lambda: self.editor.insertPlainText("$$ \\begin{bmatrix}\n  1 & 0 \\\\\n  0 & 1\n\\end{bmatrix} $$"))
+        btn_matrix.clicked.connect(lambda: (self.editor.insertPlainText("$$ \\begin{bmatrix}\n  1 & 0 \\\\\n  0 & 1\n\\end{bmatrix} $$"), self.editor.setFocus()))
         lbl_layout.addWidget(btn_matrix)
         
         btn_frac = QPushButton("a/b frac")
         btn_frac.setCursor(Qt.PointingHandCursor)
         btn_frac.setStyleSheet("padding: 2px 8px; background-color: #3e3e3e; border-radius: 3px; font-weight: bold;")
-        btn_frac.clicked.connect(lambda: self.editor.insertPlainText("\\frac{numerator}{denominator}"))
+        btn_frac.clicked.connect(lambda: (self.editor.insertPlainText("$\\frac{numerator}{denominator}$"), self.editor.setFocus()))
         lbl_layout.addWidget(btn_frac)
         
         btn_sqrt = QPushButton("√ sqrt")
         btn_sqrt.setCursor(Qt.PointingHandCursor)
         btn_sqrt.setStyleSheet("padding: 2px 8px; background-color: #3e3e3e; border-radius: 3px; font-weight: bold;")
-        btn_sqrt.clicked.connect(lambda: self.editor.insertPlainText("\\sqrt{x}"))
+        btn_sqrt.clicked.connect(lambda: (self.editor.insertPlainText("$\\sqrt{x}$"), self.editor.setFocus()))
         lbl_layout.addWidget(btn_sqrt)
 
         btn_inf = QPushButton("∞ inf")
         btn_inf.setCursor(Qt.PointingHandCursor)
         btn_inf.setStyleSheet("padding: 2px 8px; background-color: #3e3e3e; border-radius: 3px; font-weight: bold;")
-        btn_inf.clicked.connect(lambda: self.editor.insertPlainText("\\infty"))
+        btn_inf.clicked.connect(lambda: (self.editor.insertPlainText("$\\infty$"), self.editor.setFocus()))
         lbl_layout.addWidget(btn_inf)
 
+        btn_mod = QPushButton("≡ pmod")
+        btn_mod.setCursor(Qt.PointingHandCursor)
+        btn_mod.setStyleSheet("padding: 2px 8px; background-color: #3e3e3e; border-radius: 3px; font-weight: bold;")
+        btn_mod.setToolTip("Insert modular arithmetic block")
+        btn_mod.clicked.connect(lambda: (self.editor.insertPlainText("$\\equiv a \\pmod{n}$"), self.editor.setFocus()))
+        lbl_layout.addWidget(btn_mod)
+
+        btn_proof = QPushButton("📝 Theorem / Proof")
+        btn_proof.setCursor(Qt.PointingHandCursor)
+        btn_proof.setStyleSheet("padding: 2px 8px; background-color: #3e3e3e; border-radius: 3px; font-weight: bold;")
+        btn_proof.setToolTip("Insert a stylized Theorem and Proof block")
+        btn_proof.clicked.connect(lambda: (self.editor.insertPlainText("\n**Theorem:** \n\n*Proof:*\n\n$\\blacksquare$ \n"), self.editor.setFocus()))
+        lbl_layout.addWidget(btn_proof)
+
+        btn_table = QPushButton("📊 Insert Table")
+        btn_table.setCursor(Qt.PointingHandCursor)
+        btn_table.setStyleSheet("padding: 2px 8px; background-color: #3e3e3e; border-radius: 3px; font-weight: bold;")
+        btn_table.clicked.connect(lambda: (self.editor.insertPlainText("\n<table>\n  <tr>\n    <th>Header 1</th>\n    <th>Header 2</th>\n  </tr>\n  <tr>\n    <td>Data 1</td>\n    <td>Data 2</td>\n  </tr>\n</table>\n"), self.editor.setFocus()))
+        lbl_layout.addWidget(btn_table)
+
+        btn_fix = QPushButton("🪄 Lint/Fix Math")
+        btn_fix.setCursor(Qt.PointingHandCursor)
+        btn_fix.setToolTip("Auto-normalize delimiters (e.g., \\[ to $$, \\( to $) and fix spacing.")
+        btn_fix.setStyleSheet("padding: 2px 8px; background-color: #2b579a; color: white; border-radius: 3px; font-weight: bold;")
+        btn_fix.clicked.connect(self.auto_lint_math)
+        lbl_layout.addWidget(btn_fix)
+
         editor_layout.addLayout(lbl_layout)
+
+        # New Feature: Manual Color Buttons & Formatting
+        color_layout = QHBoxLayout()
+        color_layout.addWidget(QLabel("🎨 Text Colors:"))
+        
+        def apply_color(color_hex):
+            cursor = self.editor.textCursor()
+            if cursor.hasSelection():
+                text = cursor.selectedText()
+                cursor.insertText(f"<span style='color: {color_hex};'>{text}</span>")
+            else:
+                self.editor.insertPlainText(f"<span style='color: {color_hex};'>")
+            self.editor.setFocus()
+
+        def reset_color():
+            self.editor.insertPlainText("<span style='color: black;'>")
+            self.editor.setFocus()
+
+        for btn_name, btn_hex in [("Red", "#e74c3c"), ("Blue", "#3498db"), ("Green", "#2ecc71"), ("Orange", "#e67e22"), ("Purple", "#9b59b6")]:
+            color_btn = QPushButton(btn_name)
+            color_btn.setCursor(Qt.PointingHandCursor)
+            color_btn.setStyleSheet(f"padding: 2px 8px; background-color: {btn_hex}; color: white; border-radius: 3px; font-weight: bold;")
+            color_btn.clicked.connect(lambda checked=False, h=btn_hex: apply_color(h))
+            color_layout.addWidget(color_btn)
+            
+        from PySide6.QtWidgets import QColorDialog
+        custom_color_btn = QPushButton("🌈 Custom...")
+        custom_color_btn.setCursor(Qt.PointingHandCursor)
+        custom_color_btn.setToolTip("Pick any custom text color")
+        custom_color_btn.setStyleSheet("padding: 2px 8px; background-color: #555555; color: white; border-radius: 3px; font-weight: bold;")
+        def pick_custom_color():
+            color = QColorDialog.getColor()
+            if color.isValid():
+                apply_color(color.name())
+        custom_color_btn.clicked.connect(pick_custom_color)
+        color_layout.addWidget(custom_color_btn)
+            
+        reset_btn = QPushButton("⬛ Normal Text (Close Color)")
+        reset_btn.setCursor(Qt.PointingHandCursor)
+        reset_btn.setStyleSheet("padding: 2px 8px; background-color: #333333; color: white; border-radius: 3px; font-weight: bold;")
+        reset_btn.clicked.connect(reset_color)
+        reset_btn.setToolTip("Inserts a closing tag to return your text to normal black.")
+        color_layout.addWidget(reset_btn)
+            
+        color_layout.addStretch()
+        editor_layout.addLayout(color_layout)
 
         # --- FIX: Move OCR Tools to a second row to remove minimum width restrictions ---
         ocr_layout = QHBoxLayout()
@@ -295,6 +475,7 @@ class MathPdfMaker(QMainWindow):
         self.editor.setFont(QFont("Consolas", 11))
         self.editor.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #333;")
         self.editor.textChanged.connect(lambda: self.preview_timer.start(600)) # 600ms debounce
+        self.highlighter = MathSyntaxHighlighter(self.editor.document()) # Attach the syntax highlighter
         editor_layout.addWidget(self.editor)
         splitter.addWidget(editor_widget)
 
@@ -338,8 +519,8 @@ class MathPdfMaker(QMainWindow):
         self.export_btn.clicked.connect(self.export_pdf)
         ex_layout.addWidget(self.export_btn)
         
-        # Wire up the PDF finish signal permanently to avoid RuntimeWarnings
-        self.web_view.page().pdfPrintingFinished.connect(self._on_pdf_finished)
+        # Wire up the PDF finish signal permanently to avoid RuntimeWarnings and multiple triggers
+        self.web_view.page().pdfPrintingFinished.connect(self._add_decorations)
 
         from PySide6.QtWidgets import QCheckBox
         self.auto_math_cb = QCheckBox("Auto-Convert Word Math (Win)")
@@ -358,7 +539,40 @@ class MathPdfMaker(QMainWindow):
         self.export_lo_btn.clicked.connect(self.export_libreoffice)
         ex_layout.addWidget(self.export_lo_btn)
         
+        self.open_dir_btn = QPushButton("📂 Open Save Folder")
+        self.open_dir_btn.setStyleSheet("QPushButton { background-color: #555555; color: white; font-weight: bold; padding: 6px 15px; border-radius: 3px; } QPushButton:hover { background-color: #777777; }")
+        self.open_dir_btn.clicked.connect(self.open_save_directory)
+        ex_layout.addWidget(self.open_dir_btn)
+
         main_layout.addWidget(export_bar)
+
+    def open_save_directory(self):
+        last_dir = self.settings.value("last_dir", os.path.expanduser("~"))
+        if os.path.exists(last_dir):
+            if os.name == 'nt': os.startfile(last_dir)
+            elif sys.platform == 'darwin': subprocess.run(['open', last_dir])
+            else: subprocess.run(['xdg-open', last_dir])
+
+    def auto_lint_math(self):
+        """Normalizes inconsistent LaTeX math delimiters to ensure flawless MathJax rendering."""
+        text = self.editor.toPlainText()
+        
+        # Normalize AI bracket formats to standard double/single dollars
+        text = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', text, flags=re.DOTALL)
+        text = re.sub(r'\\\((.*?)\\\)', r'$\1$', text)
+        
+        # Fix common AI hallucination: separated dollar signs instead of double dollars
+        text = re.sub(r'\$\s+\$', r'$$', text)
+        
+        # Clean up stray spaces around block math limits
+        text = re.sub(r'\$\$\s*\n', r'$$\n', text)
+        text = re.sub(r'\n\s*\$\$', r'\n$$', text)
+        
+        self.editor.setPlainText(text)
+        self.progress_bar.show()
+        self.progress_bar.setFormat("Math Syntax Linted!")
+        self.progress_bar.setValue(100)
+        QTimer.singleShot(2000, self.progress_bar.hide)
 
     def generate_html(self):
         raw_text = self.editor.toPlainText()
@@ -395,6 +609,43 @@ class MathPdfMaker(QMainWindow):
         
         # --- FIX: Basic Markdown Parsing ---
         
+        # Restore HTML tags stripped by HTML escaping (Tables, Center & Colors)
+        safe_text = safe_text.replace('&lt;center&gt;', '<center>').replace('&lt;/center&gt;', '</center>')
+        safe_text = re.sub(r'&lt;span style=(?:&#x27;|&quot;)color:\s*(#[0-9a-fA-F]{6}|[a-zA-Z]+);?(?:&#x27;|&quot;)&gt;', r'<span style="color: \1;">', safe_text)
+        safe_text = safe_text.replace('&lt;/span&gt;', '</span>')
+        safe_text = re.sub(r'&lt;table(.*?)&gt;', r'<table\1>', safe_text, flags=re.IGNORECASE)
+        safe_text = re.sub(r'&lt;/table&gt;', r'</table>', safe_text, flags=re.IGNORECASE)
+        safe_text = re.sub(r'&lt;tr(.*?)&gt;', r'<tr\1>', safe_text, flags=re.IGNORECASE)
+        safe_text = safe_text.replace('&lt;/tr&gt;', '</tr>')
+        safe_text = re.sub(r'&lt;th(.*?)&gt;', r'<th\1>', safe_text, flags=re.IGNORECASE)
+        safe_text = safe_text.replace('&lt;/th&gt;', '</th>')
+        safe_text = re.sub(r'&lt;td(.*?)&gt;', r'<td\1>', safe_text, flags=re.IGNORECASE)
+        safe_text = safe_text.replace('&lt;/td&gt;', '</td>')
+        
+        # Convert Markdown Pipe Tables to HTML Tables
+        def md_table_repl(match):
+            lines = match.group(0).strip().split('\n')
+            html_table = "<table>\n"
+            for i, line in enumerate(lines):
+                line = line.strip()
+                if not line or re.match(r'^[|\s\-:]+$', line): continue # Skip separator line
+                cells = [c.strip() for c in line.strip('|').split('|')]
+                tag = "th" if i == 0 else "td"
+                html_table += "  <tr>" + "".join(f"<{tag}>{c}</{tag}>" for c in cells) + "</tr>\n"
+            return html_table + "</table>"
+        safe_text = re.sub(r'(?:^[ \t]*\|.*\|[ \t]*(?:\n|$)){2,}', md_table_repl, safe_text, flags=re.MULTILINE)
+        
+        # Protect HTML Tables from <br> injection by temporarily treating them like math blocks
+        def table_repl(match):
+            math_blocks.append(match.group(0))
+            return f"__MATH_BLOCK_{len(math_blocks)-1}__"
+        safe_text = re.sub(r'<table.*?>.*?</table>', table_repl, safe_text, flags=re.DOTALL | re.IGNORECASE)
+
+        # Convert Markdown Headings (# H1, ## H2, ### H3)
+        safe_text = re.sub(r'^### (.*?)$', r'<h3>\1</h3>', safe_text, flags=re.MULTILINE)
+        safe_text = re.sub(r'^## (.*?)$', r'<h2>\1</h2>', safe_text, flags=re.MULTILINE)
+        safe_text = re.sub(r'^# (.*?)$', r'<h1>\1</h1>', safe_text, flags=re.MULTILINE)
+
         # Convert Markdown Images: ![alt](path) -> <img src="path">
         safe_text = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', r'<img src="\2" alt="\1" style="max-width: 100%; height: auto; display: block; margin: 10px auto;">', safe_text)
         
@@ -403,6 +654,12 @@ class MathPdfMaker(QMainWindow):
         # Convert *text* to Italic
         safe_text = re.sub(r'\*(.*?)\*', r'<i>\1</i>', safe_text)
         
+        # Convert Markdown Lists (* item or - item)
+        def list_repl(match):
+            items = re.findall(r'^[ \t]*[\*\-] (.*?)$', match.group(0), flags=re.MULTILINE)
+            return "<ul>" + "".join(f"<li>{item}</li>" for item in items) + "</ul>"
+        safe_text = re.sub(r'(?:^[ \t]*[\*\-] .*?(?:\n|$))+', list_repl, safe_text, flags=re.MULTILINE)
+
         # Split by double newlines for structural paragraphs
         blocks = safe_text.split('\n\n')
         processed_blocks = []
@@ -434,6 +691,31 @@ class MathPdfMaker(QMainWindow):
         font_size = self.font_spin.value()
         line_spacing = self.line_space_spin.value()
         page_size = self.page_size_cb.currentText()
+        page_border = getattr(self, 'page_border_spin', None)
+        border_width = page_border.value() if page_border else 0
+        is_paper_view = getattr(self, 'paper_view_cb', None) and self.paper_view_cb.isChecked()
+
+        # Calculate exact dimensions for visual page boundary guides
+        if page_size == "A4":
+            page_w_num, page_h_num = 210.0, 297.0
+        elif page_size == "Letter":
+            page_w_num, page_h_num = 215.9, 279.4
+        else: # Legal
+            page_w_num, page_h_num = 215.9, 355.6
+            
+        page_w = f"{page_w_num}mm"
+        page_h = f"{page_h_num}mm"
+        
+        # FIX: The true printable area height used by the PDF engine (subtracting top & bottom Qt margins)
+        print_h_mm = page_h_num - (margin * 2)
+
+        screen_bg = "#525659" if is_paper_view else "#ffffff"
+        screen_padding = "20px 0" if is_paper_view else "0"
+        screen_overflow = "hidden" if is_paper_view else "auto"
+        wrapper_w = page_w if is_paper_view else "100%"
+        wrapper_min_h = page_h if is_paper_view else "auto"
+        wrapper_shadow = "0 4px 12px rgba(0,0,0,0.5)" if is_paper_view else "none"
+        page_container_style = f"position: relative; width: {page_w if is_paper_view else '100%'}; margin: 0 auto; background-color: transparent;"
 
         html_template = f"""
         <!DOCTYPE html>
@@ -450,14 +732,125 @@ class MathPdfMaker(QMainWindow):
                     }},
                     svg: {{
                         fontCache: 'global'
+                    }},
+                    startup: {{
+                        pageReady: () => {{
+                            return MathJax.startup.defaultPageReady().then(() => {{
+                                window.drawPageNumbers();
+                            }});
+                        }}
                     }}
+                }};
+
+                window.PAGE_HEIGHT_PX = 1000; // Will be dynamically calculated
+                
+                window.getTotalPages = function() {{
+                    const wrapper = document.querySelector('.content-wrapper');
+                    if (!wrapper) return 1;
+                    return Math.max(1, Math.ceil(wrapper.scrollHeight / window.PAGE_HEIGHT_PX));
+                }};
+
+                window.scrollToPage = function(pageNum, mode) {{
+                    const wrapper = document.querySelector('.content-wrapper');
+                    const container = document.querySelector('.page-container');
+                    if (!wrapper || !container) return;
+                    
+                    if (mode === "Single Page") {{
+                        wrapper.style.transform = `translateY(-${{(pageNum - 1) * window.PAGE_HEIGHT_PX}}px)`;
+                        container.style.overflow = "hidden";
+                        container.style.height = `${{window.PAGE_HEIGHT_PX}}px`;
+                        container.style.boxShadow = "0 4px 12px rgba(0,0,0,0.5)";
+                        wrapper.style.boxShadow = "none";
+                        window.scrollTo(0, 0);
+                    }} else {{
+                        wrapper.style.transform = "none";
+                        container.style.overflow = "visible";
+                        container.style.height = "auto";
+                        container.style.boxShadow = "none";
+                        wrapper.style.boxShadow = "0 4px 12px rgba(0,0,0,0.5)";
+                        window.scrollTo(0, (pageNum - 1) * window.PAGE_HEIGHT_PX);
+                    }}
+                }};
+
+                window.fitToScreen = function() {{
+                    const container = document.querySelector('.page-container');
+                    if (!container) return;
+                    container.style.zoom = "1"; // Reset zoom to measure properly
+                    if (!{str(is_paper_view).lower()}) return; // Disable zoom auto-scale if Paper View is off
+                    const availableWidth = window.innerWidth - 40; 
+                    const targetWidth = container.offsetWidth;
+                    // Force true 'Fit to Width' scale using CSS zoom to kill phantom scrollbars
+                    if (targetWidth > 0 && availableWidth > 0) {{
+                        const scale = availableWidth / targetWidth;
+                        container.style.zoom = scale;
+                    }}
+                }};
+                window.addEventListener('resize', window.fitToScreen);
+
+                window.drawPageNumbers = function() {{
+                    // FIX: Calculate pixel height of the PRINTABLE area, not the physical paper.
+                    // This prevents page numbers from drifting into the middle of the next page during PDF export.
+                    const ruler = document.createElement('div');
+                    ruler.style.height = '{print_h_mm}mm';
+                    ruler.style.position = 'absolute';
+                    ruler.style.visibility = 'hidden';
+                    document.body.appendChild(ruler);
+                    const printableHeightPx = ruler.getBoundingClientRect().height;
+                    document.body.removeChild(ruler);
+                    
+                    window.PAGE_HEIGHT_PX = printableHeightPx;
+
+                    const container = document.querySelector('.page-container');
+                    // Calculate total pages based on the actual flowing content height
+                    const totalPages = Math.max(1, Math.ceil(container.scrollHeight / printableHeightPx));
+                    
+                    document.querySelectorAll('.page-number-overlay').forEach(e => e.remove());
+                    
+                    // HTML/JS page numbers removed to prevent overlap.
+                    // Page numbers are now handled securely by PyMuPDF during export.
+                    
+                    window.fitToScreen();
                 }};
             </script>
             <script id="MathJax-script" async src="{self.mathjax_url}"></script>
             <style>
+                .page-number-overlay {{
+                    position: absolute;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    color: #000; 
+                    font-size: 11pt; 
+                    background: transparent;
+                    /* Subtle white halo so if text overlaps it slightly, the number remains readable */
+                    text-shadow: 0px 0px 4px #fff, 0px 0px 4px #fff;
+                    pointer-events: none;
+                    z-index: 1000;
+                }}
                 @page {{
                     size: {page_size};
                     margin: {margin}mm;
+                }}
+                @media screen {{
+                    body {{
+                        background-color: {screen_bg} !important;
+                        padding: {screen_padding};
+                        overflow-x: {screen_overflow};
+                    }}
+                    .content-wrapper {{
+                        width: {wrapper_w};
+                        min-height: {wrapper_min_h};
+                        box-shadow: {wrapper_shadow};
+                        background-color: #fff;
+                    }}
+                }}
+                @media print {{
+                    /* Force PDF engine to un-clip the document regardless of UI view mode */
+                    .page-container, .content-wrapper {{
+                        height: auto !important;
+                        overflow: visible !important;
+                        transform: none !important;
+                        box-shadow: none !important;
+                    }}
                 }}
                 body{{
                     font-family: 'Segoe UI', system-ui, Arial, sans-serif;
@@ -466,14 +859,12 @@ class MathPdfMaker(QMainWindow):
                     color: #000;
                     background: #fff;
                     margin: 0;
-                    padding: {margin}mm; /* Matches @page margin for accurate screen preview */
-                    box-sizing: border-box;
-                    min-height: 100vh; /* FIX: Force background to fill the preview window vertically */
                 }}
                 .block {{
                     margin-bottom: 1.2em;
                     page-break-inside: auto;
                 }}
+                h1, h2, h3 {{ margin: 0.5em 0; font-weight: bold; line-height: 1.2; }}
                 .watermark{{
                     position: fixed;
                     top: 50%;
@@ -497,10 +888,31 @@ class MathPdfMaker(QMainWindow):
                 mjx-container {{
                     white-space: normal !important;
                 }}
+                .content-wrapper {{
+                    border: {border_width}px solid #000;
+                    padding: {margin}mm;
+                    box-sizing: border-box;
+                    overflow-wrap: break-word;
+                    word-wrap: break-word;
+                }}
+                table {{
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin: 1em 0;
+                }}
+                th, td {{
+                    border: 1px solid #000;
+                    padding: 8px;
+                    text-align: left;
+                }}
             </style>
         </head>
         <body>
-            {final_body}
+            <div class="page-container" style="{page_container_style}">
+                <div class="content-wrapper" style="position: relative; transition: transform 0.2s ease;">
+                    {final_body}
+                </div>
+            </div>
         </body>
         </html>
         """
@@ -509,6 +921,80 @@ class MathPdfMaker(QMainWindow):
     def update_preview(self):
         html_content = self.generate_html()
         self.web_view.setHtml(html_content, QUrl("file:///"))
+        # Poll the JavaScript engine for the calculated total pages after MathJax renders
+        QTimer.singleShot(1500, self.fetch_page_count)
+
+    def navigate_page(self):
+        page = self.page_spin.value()
+        mode = self.preview_mode_cb.currentText()
+        # Safety check: Prevent calling JS if the async QWebEngineView hasn't registered script tags yet
+        js = f"if (typeof window.scrollToPage === 'function') window.scrollToPage({page}, '{mode}');"
+        self.web_view.page().runJavaScript(js)
+
+    def fetch_page_count(self):
+        js = "window.getTotalPages ? window.getTotalPages() : 1;"
+        self.web_view.page().runJavaScript(js, self._update_page_count_ui)
+        
+    def _update_page_count_ui(self, count):
+        if count is not None: # FIX: Prevents UI from getting stuck if JS returns 0 or None initially
+            total = max(1, int(count))
+            self.page_spin.setRange(1, total)
+            self.total_pages_lbl.setText(f" / {total}")
+            self.navigate_page() # Ensure current view respects the mode and boundaries
+            
+            # Enforce the 1-Page Limit dynamically
+            if getattr(self, 'page_limit_cb', None) and self.page_limit_cb.isChecked() and total > 1:
+                self.limit_warning_lbl.show()
+                if getattr(self, 'trim_btn', None): self.trim_btn.show()
+                self.export_btn.setEnabled(False)
+            else:
+                if getattr(self, 'limit_warning_lbl', None):
+                    self.limit_warning_lbl.hide()
+                if getattr(self, 'trim_btn', None):
+                    self.trim_btn.hide()
+                if getattr(self, 'undo_trim_btn', None) and not hasattr(self, '_undo_cache'):
+                    self.undo_trim_btn.hide() # Hide undo only if no memory state exists
+                if not self.progress_bar.isVisible(): # Prevent enabling if currently exporting
+                    self.export_btn.setEnabled(True)
+
+    def trim_overflow(self):
+        """Proportionally trims excess text from the bottom safely to fit 1 page."""
+        text = self.editor.toPlainText()
+        if not text: return
+        try:
+            total = int(self.total_pages_lbl.text().replace('/', '').strip())
+        except ValueError:
+            return
+        if total <= 1: return
+        
+        # Save state to memory for Undo functionality
+        if not hasattr(self, '_undo_cache'):
+            self._undo_cache = text
+            if getattr(self, 'undo_trim_btn', None):
+                self.undo_trim_btn.show()
+        
+        # Calculate proportional size. Uses a heavier dampener for massive documents 
+        # to account for visually dense math blocks that have low character counts.
+        dampener = 0.85 if total < 5 else (0.5 if total < 10 else 0.3)
+        ratio = 1.0 / total
+        target_len = int(len(text) * ratio * dampener) 
+        
+        # Seek backwards to nearest paragraph break so we don't slice equations in half
+        safe_cutoff = text.rfind('\n\n', 0, target_len)
+        if safe_cutoff == -1: 
+            safe_cutoff = target_len # Fallback if no paragraphs exist
+            
+        self.editor.setPlainText(text[:safe_cutoff])
+        self.preview_timer.start(0) # Instantly trigger UI and preview update
+
+    def undo_trim(self):
+        """Restores the text to its state before trimming."""
+        if hasattr(self, '_undo_cache'):
+            self.editor.setPlainText(self._undo_cache)
+            del self._undo_cache
+            if getattr(self, 'undo_trim_btn', None):
+                self.undo_trim_btn.hide()
+            self.preview_timer.start(0)
 
     def export_pdf(self):
         default_name = self.filename_input.text().strip()
@@ -528,6 +1014,7 @@ class MathPdfMaker(QMainWindow):
 
         # Setup precise Chromium Print Layout to match settings
         layout = QPageLayout()
+        layout.setUnits(QPageLayout.Millimeter) # FIX: Force margins to calculate as mm, not points
         
         # Map string to QPageSize
         ps_str = self.page_size_cb.currentText()
@@ -546,30 +1033,45 @@ class MathPdfMaker(QMainWindow):
         self.export_btn.setText("⏳ Generating...")
         self.export_btn.setEnabled(False)
         
+        # PDF finish signal is handled globally now to prevent multiple overlapping connections
         self.progress_bar.show()
         self.progress_bar.setFormat("Generating PDF Layout...")
         self.progress_bar.setRange(0, 0) # Infinite loop animation for Chromium background tasks
             
         self.web_view.page().printToPdf(filepath, layout)
 
+    def _add_decorations(self, filepath, success):
+        """Adds black page borders and numbering using QPainter."""
+        if success:
+            from PySide6.QtGui import QPainter, QPen, QColor
+            import fitz  # Using PyMuPDF for rapid PDF editing
+            doc = fitz.open(filepath)
+            show_nums = getattr(self, 'page_number_cb', None) and self.page_number_cb.isChecked()
+            for page in doc:
+                rect = page.rect
+                page.draw_rect(rect, color=(0, 0, 0), width=2, fill=None) # Black Border
+                if show_nums:
+                    page.insert_text((rect.width/2 - 10, rect.height - 20), f"Page {page.number + 1}", fontsize=11)
+            doc.save(filepath, incremental=True, encryption=0)
+            doc.close()
+        self._on_pdf_finished(filepath, success)
+
     def _on_pdf_finished(self, saved_filepath, success):
-        self.progress_bar.setFormat("%p%") # Reset format
+        self.progress_bar.setFormat("%p%") 
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100)
-        QTimer.singleShot(2000, self.progress_bar.hide) # Hide it after 2 seconds
+        QTimer.singleShot(2000, self.progress_bar.hide)
         
         self.export_btn.setText("💾 Export PDF")
         self.export_btn.setEnabled(True)
         
         if success:
-            QMessageBox.information(self, "Success", f"PDF exported successfully to:\n{saved_filepath}")
-            # Try to auto-open
-            try:
-                if os.name == 'nt': os.startfile(saved_filepath)
-                elif sys.platform == 'darwin': subprocess.run(['open', saved_filepath])
-                else: subprocess.run(['xdg-open', saved_filepath])
-            except:
-                pass
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle("Success")
+            msg.setText(f"PDF exported successfully to:\n{saved_filepath}")
+            msg.show()
+            QTimer.singleShot(1000, msg.accept) # Auto-die in 1 second
         else:
             QMessageBox.critical(self, "Error", "Failed to generate PDF. Make sure the file isn't open in another program.")
 
@@ -645,6 +1147,23 @@ class MathPdfMaker(QMainWindow):
                 QApplication.processEvents() # Force UI to paint the progress bar
 
                 p = doc.add_paragraph()
+                
+                # Handle <center> tags in Word
+                if '<center>' in para:
+                    from docx.enum.text import WD_ALIGN_PARAGRAPH
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    para = para.replace('<center>', '').replace('</center>', '')
+
+                # Apply Native Word Heading styles if Markdown markers are detected
+                if para.startswith('### '):
+                    p.style = 'Heading 3'
+                    para = para.replace('### ', '', 1)
+                elif para.startswith('## '):
+                    p.style = 'Heading 2'
+                    para = para.replace('## ', '', 1)
+                elif para.startswith('# '):
+                    p.style = 'Heading 1'
+                    para = para.replace('# ', '', 1)
                 lines = para.split('\n')
                 
                 for line_idx, line in enumerate(lines):
@@ -701,11 +1220,6 @@ class MathPdfMaker(QMainWindow):
             doc.save(filepath)
             
             QMessageBox.information(self, "Success", f"Word Document exported natively to:\n{filepath}")
-            try:
-                if os.name == 'nt': os.startfile(filepath)
-                elif sys.platform == 'darwin': subprocess.run(['open', filepath])
-                else: subprocess.run(['xdg-open', filepath])
-            except: pass
             
             self.export_word_btn.setText("📝 Export Word (.docx)")
             self.export_word_btn.setEnabled(True)
@@ -820,13 +1334,6 @@ class MathPdfMaker(QMainWindow):
                     except: pass
             
             QMessageBox.information(self, "Success", f"Word Document exported successfully to:\n{filepath}")
-            
-            try:
-                if os.name == 'nt': os.startfile(filepath)
-                elif sys.platform == 'darwin': subprocess.run(['open', filepath])
-                else: subprocess.run(['xdg-open', filepath])
-            except:
-                pass
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to generate Word Document:\n{e}")
             
@@ -887,6 +1394,24 @@ class MathPdfMaker(QMainWindow):
             
             for para in paragraphs:
                 p = doc.add_paragraph()
+
+                # Handle <center> tags in LibreOffice
+                if '<center>' in para:
+                    from docx.enum.text import WD_ALIGN_PARAGRAPH
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    para = para.replace('<center>', '').replace('</center>', '')
+
+                # Apply Heading styles for LibreOffice
+                if para.startswith('### '):
+                    p.style = 'Heading 3'
+                    para = para.replace('### ', '', 1)
+                elif para.startswith('## '):
+                    p.style = 'Heading 2'
+                    para = para.replace('## ', '', 1)
+                elif para.startswith('# '):
+                    p.style = 'Heading 1'
+                    para = para.replace('# ', '', 1)
+
                 lines = para.split('\n')
                 
                 for line_idx, line in enumerate(lines):
@@ -918,12 +1443,6 @@ class MathPdfMaker(QMainWindow):
             doc.save(filepath)
             
             QMessageBox.information(self, "Success", f"Document exported successfully for LibreOffice to:\n{filepath}")
-            
-            try:
-                if os.name == 'nt': os.startfile(filepath)
-                elif sys.platform == 'darwin': subprocess.run(['open', filepath])
-                else: subprocess.run(['xdg-open', filepath])
-            except: pass
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to generate LO Document:\n{e}")
             
@@ -1095,6 +1614,10 @@ class MathPdfMaker(QMainWindow):
         threading.Thread(target=run_gemini, daemon=True).start()
 
 if __name__ == "__main__":
+    # Force CPU rendering to bypass Intel Haswell Vulkan/libva driver errors on Linux
+    # Also suppress goofy terminal warnings (GPUInfo, libva errors, etc)
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu --disable-software-rasterizer --log-level=3"
+    os.environ["QT_LOGGING_RULES"] = "qt.webenginecontext.info=false;qt.webenginecontext.warning=false"
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     window = MathPdfMaker()
