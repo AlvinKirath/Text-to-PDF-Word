@@ -1,65 +1,174 @@
 # 📝 Math PDF Maker (AlvinRocks Edition)
 
-**"The Bridge Between AI Math and Professional Documents."**
+**A Cross-Platform Markdown, LaTeX & OCR Editor for Creating Professional Mathematical Documents**
 
-Most math tools make you choose between the speed of **Markdown/LaTeX** and the formatting of **Microsoft Word**. **Math PDF Maker** lets you have both. It’s a dedicated workspace for competitive math enthusiasts, students, and educators to create high-quality PDFs from scratch or from screenshots.
-
----
-
-## **🚀 Key Features**
-
-### **1. AI-Powered OCR & Vision**
-Stop re-typing equations. 
-* **Local OCR**: Uses `rapidocr_onnxruntime` for instant, offline text extraction from your clipboard.
-* **Gemini Vision**: For complex formulas or handwritten notes, the integrated Gemini 1.5 Flash model translates images into structured LaTeX instantly.
-
-### **2. Professional Export Engine**
-We don't just "paste" math as images. 
-* **Native Equations**: Generates true Microsoft Word equation objects using `math2docx`.
-* **PDF Mastery**: Automatically triggers a background Word instance to export your document as a high-fidelity PDF.
-
-### **3. Workflow Optimization**
-* **Auto-Install**: The script checks your Python environment and installs all necessary libraries (Pillow, PyMuPDF, `math2docx`, etc.) automatically.
-* **Presets**: Switch between **"IOQM Worksheet,"** **"Simple Note,"** or **"Raw Text"** templates to handle different document styles instantly.
-* **Draft System**: Built-in autosave and draft management so you never lose your progress.
+Math PDF Maker is a desktop application designed for students, teachers, researchers, and competitive mathematics enthusiasts. It combines Markdown, LaTeX, OCR, AI-assisted transcription, and professional document export into a single workspace.
 
 ---
 
-## **⌨️ Keyboard Shortcuts**
+# ✨ Features
 
-| Shortcut | Action |
-| :--- | :--- |
-| **Ctrl + V** | **Smart Paste**: Triggers Local OCR on clipboard images. |
-| **Ctrl + Shift + V** | **AI Paste**: Sends clipboard image to Gemini for LaTeX extraction. |
-| **Ctrl + S** | **Export**: Instantly generates the Word/PDF document. |
-| **Ctrl + N** | **New Draft**: Clears the editor and starts a fresh project. |
-| **Ctrl + Q** | **Quick Save**: Saves current progress to the Drafts tab. |
+## 🐧 Cross-Platform
+- ✅ Windows support
+- ✅ Native Linux support
+- Automatic dependency installation on first launch
 
 ---
 
-## **🛠️ Installation & Setup**
+## ✍️ Rich Markdown + LaTeX Editor
 
-1.  **Clone the Repository**:
-    ```bash
-    git clone https://github.com/AlvinKirath/Math-PDF-Maker.git
-    ```
-2.  **Run the Script**:
-    ```bash
-    python math_pdf_maker.py
-    ```
-    *Note: The script will automatically prompt you to install dependencies if they are missing.*
+Write mathematics naturally using Markdown and LaTeX.
 
-3.  **Gemini API (Optional)**:
-    To use the AI-Vision feature, obtain a free API key from [Google AI Studio](https://aistudio.google.com/) and enter it into the UI when prompted.
+Supports:
 
----
+- Inline & display equations
+- Markdown formatting
+- Images
+- Tables
+- Lists
+- Headings
+- Colored text
+- Centered text
+- HTML tables
 
-## **⚠️ Requirements**
-* **Windows OS**: Required for the PDF export feature (uses Word COM API).
-* **Microsoft Word**: Must be installed for `.docx` to `.pdf` conversion.
-* **Python 3.10+**
+Live MathJax rendering provides an instant preview while typing.
 
 ---
 
-### **Final Note**
-This application was built to solve the friction of documenting complex math. It uses a combination of local OCR for speed and Cloud AI for accuracy, ensuring that no matter how messy your source material is, your final PDF looks professional.
+## 📐 Built-in Math Toolbar
+
+Quick insertion buttons for common mathematical constructs:
+
+- Matrix
+- Fractions
+- Square roots
+- Infinity
+- Modular arithmetic
+- Theorem / Proof templates
+- Tables
+
+Also includes:
+
+- Automatic LaTeX syntax normalization
+- Math lint/fix tool
+
+---
+
+## 👀 Advanced Preview
+
+The preview window includes:
+
+- Continuous view
+- Single-page view
+- Paper View
+- Adjustable page borders
+- Optional page numbers
+- Page navigation
+- Page counter
+- One-page limit mode
+- Auto-trim overflowing documents
+- Undo Trim
+
+---
+
+## 🖼 OCR
+
+### Local OCR
+
+- Offline OCR using RapidOCR
+- Supports images and PDFs
+
+### Gemini OCR
+
+- AI-assisted extraction of mathematical expressions
+- Produces Markdown + properly delimited LaTeX
+
+---
+
+## 📤 Export
+
+Export directly to:
+
+- PDF
+- Microsoft Word (.docx)
+- LibreOffice-compatible documents
+
+Features include:
+
+- Native Word equations using `math2docx`
+- Progress indicators
+- Automatic save-folder memory
+- Open output folder directly from the application
+
+---
+
+## 🎨 Formatting Tools
+
+- Custom text colors
+- Multiple preset colors
+- Headers
+- Watermarks
+- Adjustable margins
+- Font size
+- Line spacing
+- Multiple paper sizes
+
+---
+
+## ⚡ Performance
+
+- Offline MathJax support
+- Automatic dependency installer
+- Background OCR threads
+- Faster preview updates
+- Improved rendering stability
+- Better Linux compatibility
+
+---
+
+# 🚀 Installation
+
+Clone the repository
+
+```bash
+git clone https://github.com/AlvinKirath/Math-PDF-Maker.git
+```
+
+Run
+
+```bash
+python math_pdf_maker.py
+```
+
+Missing dependencies are detected and installed automatically on first launch.
+
+---
+
+# Optional AI Features
+
+To use Gemini OCR:
+
+1. Obtain a Gemini API key from Google AI Studio.
+2. Paste it into the application.
+3. Start extracting mathematical content from images.
+
+---
+
+# Requirements
+
+- Python 3.10+
+- Windows or Linux
+
+Optional:
+
+- Microsoft Word (for advanced native Word equation support on Windows)
+
+---
+
+# License
+
+MIT License
+
+---
+
+Made with ❤️ for mathematicians, teachers, students, and anyone who wants beautiful mathematical documents without wrestling with complicated typesetting software.
